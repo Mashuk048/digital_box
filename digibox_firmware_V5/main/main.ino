@@ -1,12 +1,9 @@
-//Digital box
-//by Md. Masuk E-lahi
-
 #include <ESP8266WiFi.h>
-#include <ESP8266WebServer.h>
 #include <WiFiManager.h>  
 #include <DNSServer.h>
 #include <PubSubClient.h>
 #include <SparkFunCCS811.h>
+#include <ArduinoJson.h>
 
 #include <ClosedCube_HDC1080.h>
 #define CCS811_ADDR 0x5A    //Alternate I2C Address
@@ -19,21 +16,30 @@ Ticker secondTick;
 CCS811 myCCS811(CCS811_ADDR);
 ClosedCube_HDC1080 myHDC1080;
 
+
 //MQTT  credentials
 
-const char *mqtt_server = "182.163.112.219";
+const char *mqtt_server = "broker.datasoft-bd.com";
+const char *public_mqtt_server = "broker.hivemq.com";
 const int mqttPort = 1883;
 int mqttTryCounter=0;
 
 WiFiClient espClient;
 PubSubClient client(espClient);
-unsigned long previousMillis = 0;
-long interval = 50000;
-unsigned long previousMillis2 = 0;
-long interval2 = 65000;
+
 unsigned long previousMillis3 = 0;
-long interval3 = 5000;
-char sleep_time[6]="10";
+long wifi_check_interval = 5000;
+
+unsigned long previousMillis = 0;
+long publish_interval = 50000;
+
+unsigned long previousMillis2 = 0;
+long deep_sleep_interval = 65000;
+
+
+
+//char sleep_time[] = "20";
+int sleep_time = 20; //in seconds
 
 
 
@@ -45,6 +51,7 @@ int Humidity = 0;
 int carbon_dioxide = 0;
 int total_voc = 0;
 int methane = 0;
+int D4 = 2;//led pin
 
 //-------------------------Variable to store sensor data----------------------------//
 int data1 = 0;
@@ -52,14 +59,11 @@ int data2 = 0;
 int data3 = 0;
 int data4 = 0;
 int data5 = 0;
-int did = 1003;
-int D4= 0;
+String did = "DB101";
 
 String data = "";
 //char topic[50] = "DSBD/iot2020/weather_station";
 
-//int D8=0;
-//int D7=0;
 volatile int watchdogCount = 0;
 char sensorData[68];
 
@@ -75,7 +79,7 @@ extern "C" {
 void ISRwatchdog() {
   watchdogCount++;
   if (watchdogCount == 180) {
-    Serial.println("Watchdog bites!!");
+    Serial.println("Watchdog bites!!!");
     ESP.reset();
   }
 }
@@ -96,21 +100,22 @@ void setup() {
   //It is recommended to check return status on .begin(), but it is not required.
   CCS811Core::status returnCode = myCCS811.begin();
   delay(10);
-  if (returnCode != CCS811Core::SENSOR_SUCCESS)
+  if (returnCode != CCS811Core::SENSOR_SUCCESS) 
   {
+//    Serial.println(".begin() returned with an error.");
+//    while (1);      //No reason to go further
+    client.publish("dbox/response","sensor error");
     Serial.println(".begin() returned with an error.");
-    while (1);      //No reason to go further
   }
   pinMode(analogPin, INPUT);
-
-  
+ 
   
   client.setServer(mqtt_server,mqttPort);//Connecting to broker
  
   client.setCallback(callback); // Attaching callback for subscribe mode
+}//setup ends
 
 
-}
 
 
 //------------------------------------Main Loop--------------------------------------------------//
@@ -119,25 +124,25 @@ void loop(){
     watchdogCount = 0;
     
     if (myCCS811.dataAvailable()) {
-    myCCS811.readAlgorithmResults();
-  }
+      myCCS811.readAlgorithmResults();
+    }
+    
   unsigned long currentMillis = millis();
-if(currentMillis - previousMillis3 > interval3) {
+//  wifi_manager();
+  if(currentMillis - previousMillis3 > wifi_check_interval) {
     previousMillis3 = currentMillis;
     
-    Serial.println(previousMillis3);
-
-    
+    Serial.println(previousMillis3); 
     
     if (WiFi.status() != WL_CONNECTED){ 
-      
-//  set_wifi();
-    wifi_manager();
+      //  set_wifi();
+        wifi_manager();
     }
     else {
-      Serial.println(" wifi already connected");
-      }
+      Serial.println(" Wifi already connected");
+    }
 }
+
   if (!client.connected() && (WiFi.status() == WL_CONNECTED)){
 
     reconnect();
@@ -145,51 +150,43 @@ if(currentMillis - previousMillis3 > interval3) {
 
    client.loop();
 
-  
+    //need to work here  
     data = sensor_data();
+    
+    
     data.toCharArray(sensorData,68);
     Serial.println("Sendor data: " + data);
-//    client.publish("DSBD/iot2020/weather_station",sensorData); 
+//    client.publish("DSBD/iot2020/weather_station",sensorData);
     
+    if(currentMillis - previousMillis > publish_interval) {
     
-    Serial.println("Current Millis");
-    Serial.println(currentMillis);
-    
-    if(currentMillis - previousMillis > interval) {
-    
-    previousMillis = currentMillis;
-    Serial.println("Ticking every 50 seconds"); 
-    Serial.println(previousMillis);
-    Serial.println("Inside sensor data publish");
-    if (!client.connected()){
-
-    reconnect();
-  }
-    int result = client.publish("DSBD/iot2020/weather_station",sensorData); 
-    Serial.println(result);
-    if (result ==1){
-      Serial.println("Pulished successfully");
-      }else{
-        Serial.println("Unable to publish");
+        previousMillis = currentMillis;
+        Serial.println("Ticking every 50 seconds"); 
+        Serial.println("Inside sensor data publish");
+        
+        if (!client.connected()){ reconnect();}
+        
+        int result = client.publish("dsiot/dbox/ws",sensorData); 
+        
+//        Serial.println(result);
+        if (result ==1){
+          Serial.println("Pulished successfully");
+        }else{
+            Serial.println("Unable to publish");
         }
-      
-//    delay(2000);
-    
-    
-  }
+    }// Timer ends
 
 
-  if(currentMillis - previousMillis2 > interval2) {
+  if(currentMillis - previousMillis2 > deep_sleep_interval) {
     previousMillis2 = currentMillis;
     
-    Serial.println(previousMillis2);
+//    Serial.println(previousMillis2);
     Serial.println("Inside deep_sleep");
-    deep_sleep();
-    
+    deep_sleep_new(sleep_time); 
   }
-    
   
-}
+}//LOOP ENDS
+
 
 
 //---------------------------------------Read Sensor Data---------------------------------------//
@@ -206,8 +203,8 @@ String sensor_data()
   
 
   String msg2 = "";
-  msg2 = msg2 + "{\"DID\":" + did + "," + "\"TMP\":" + data1 + "," + "\"HUM\":" + data2 + "," + "\"CO2\":" + data3 + "," + "\"VOC\":" + data4 + "," + "\"CH4\":" + data5 + "}";
-
+//  msg2 = msg2 + "{\"DID\":" + did + "," + "\"TMP\":" + data1 + "," + "\"HUM\":" + data2 + "," + "\"CO2\":" + data3 + "," + "\"VOC\":" + data4 + "," + "\"CH4\":" + data5 + "}";
+  msg2 = msg2 + "{\"DID\":" + "\""+ did + "\""+ "," + "\"TMP\":" + data1 + "," + "\"HUM\":" + data2 + "," + "\"CO2\":" + data3 + "," + "\"VOC\":" + data4 + "," + "\"CH4\":" + data5 + "}";
   
   delay(200);       //........ 0.2 sec delay...........//
   return msg2;
@@ -216,13 +213,23 @@ String sensor_data()
 
 
 
-void deep_sleep(){
+//void deep_sleep(){
+//Serial.println("Device is going into DEEEEEEEP_Sleep");
+//  Serial.print("Sleep Time:");
+//  Serial.println(atoi(sleep_time));
+//  ESP.deepSleep(atoi(sleep_time) * 1000000); //sleep for 10 seconds
+//  delay (500);
+//}
+
+
+void deep_sleep_new(int stime){
 Serial.println("Device is going into DEEEEEEEP_Sleep");
-  Serial.print("Sleep Time:");
-  Serial.println(atoi(sleep_time));
-  ESP.deepSleep(atoi(sleep_time) * 1000000); //sleep for 10 seconds
+  Serial.print("Sleep Time(second):");
+  Serial.println(stime);
+  ESP.deepSleep(stime * 1000000); //sleep for 10 seconds
   delay (500);
 }
+
 void set_wifi() {
   delay(250);
   int tryCount = 0;
@@ -241,4 +248,3 @@ void set_wifi() {
   Serial.println(WiFi.localIP());
   delay(250);
   }
-
